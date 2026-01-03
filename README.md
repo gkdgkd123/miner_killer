@@ -30,7 +30,7 @@
 ### 方式 1: 直接下载运行 (推荐)
 
 ```bash
-curl -O [https://raw.githubusercontent.com/gkdgkd123/miner_killer/main/miner_killer.sh](https://raw.githubusercontent.com/gkdgkd123/miner_killer/main/miner_killer.sh)
+curl -O https://raw.githubusercontent.com/gkdgkd123/miner_killer/main/miner_killer.sh
 chmod +x miner_killer.sh
 sudo ./miner_killer.sh
 ```
