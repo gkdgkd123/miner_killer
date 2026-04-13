@@ -22,7 +22,7 @@ BACKUP_DIR=$(mktemp -d /tmp/malware_quarantine.XXXXXX) || { echo "Failed to crea
 LOCK_FILE="/tmp/miner_killer.lock"
 
 # --- IP 情报查询配置 ---
-IPINFO_API_KEY=""  # 可选：设置为你的 API 密钥，留空则使用免费接口
+IPINFO_API_KEY="a3b3be25941f14415ba93648ea46308cd5f9d6d7c256dc4753a351eaf8cc9b0e"  # 官方免费 key
 
 # --- 恶意特征库 ---
 MALWARE_KEYWORDS="miner|pool|xmrig|kinsing|c3pool|nanopool|f2pool|stratum|wallet|crypto|eth|xmr|monero|ocean|nicehash|hash|coins|pZzQ|azbQ|kdevtmpfs|java-c|log_rot|watchbog|kthrotlds"
