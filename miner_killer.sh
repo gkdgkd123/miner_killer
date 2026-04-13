@@ -167,10 +167,10 @@ get_ip_info() {
 
     # 使用 Python 解析 JSON（如果可用）
     if command -v python3 >/dev/null 2>&1; then
-        local result=$(python3 -c "
+        local result=$(echo "$response" | python3 -c "
 import json, sys
 try:
-    data = json.loads('''$response''')
+    data = json.load(sys.stdin)
 
     # 提取地理位置信息
     location = data.get('location', {})
