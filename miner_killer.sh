@@ -172,10 +172,12 @@ import json, sys
 try:
     data = json.load(sys.stdin)
 
-    # 提取地理位置信息
+    # 提取地理位置信息（country 和 region 是嵌套对象）
     location = data.get('location', {})
-    country = location.get('country', '')
-    region = location.get('region', '')
+    raw_country = location.get('country', {})
+    country = raw_country.get('name', '') if isinstance(raw_country, dict) else str(raw_country)
+    raw_region = location.get('region', {})
+    region = raw_region.get('name', '') if isinstance(raw_region, dict) else str(raw_region)
     city = location.get('city', '')
 
     # 提取公司信息
