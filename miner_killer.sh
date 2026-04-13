@@ -21,6 +21,9 @@ LOG_FILE="/var/log/miner_killer_$(date +%Y%m%d_%H%M%S).log"
 BACKUP_DIR=$(mktemp -d /tmp/malware_quarantine.XXXXXX) || { echo "Failed to create backup dir"; exit 1; }
 LOCK_FILE="/tmp/miner_killer.lock"
 
+# --- IP 情报查询配置 ---
+IPINFO_API_KEY=""  # 可选：设置为你的 API 密钥，留空则使用免费接口
+
 # --- 恶意特征库 ---
 MALWARE_KEYWORDS="miner|pool|xmrig|kinsing|c3pool|nanopool|f2pool|stratum|wallet|crypto|eth|xmr|monero|ocean|nicehash|hash|coins|pZzQ|azbQ|kdevtmpfs|java-c|log_rot|watchbog|kthrotlds"
 
@@ -141,6 +144,76 @@ find_service_file() {
     echo "$svc_path"
 }
 
+# --- IP 情报查询函数 ---
+get_ip_info() {
+    local ip="$1"
+
+    # 私有 IP 过滤
+    if [[ "$ip" =~ ^127\. ]] || [[ "$ip" =~ ^10\. ]] || [[ "$ip" =~ ^192\.168\. ]] || [[ "$ip" =~ ^172\.(1[6-9]|2[0-9]|3[01])\. ]]; then
+        echo "[Private IP]"
+        return
+    fi
+
+    # 构建 API 请求
+    local api_url="https://ipinfo.dkly.net/api/v1/ip/$ip"
+    local curl_opts="-s --connect-timeout 3"
+
+    if [ -n "$IPINFO_API_KEY" ]; then
+        curl_opts="$curl_opts -H \"Authorization: Bearer $IPINFO_API_KEY\""
+    fi
+
+    # 执行 API 请求
+    local response=$(eval "curl $curl_opts '$api_url'" 2>/dev/null)
+
+    if [ -z "$response" ]; then
+        echo "[API Request Failed]"
+        return
+    fi
+
+    # 无 jq 环境下的 JSON 解析（使用 grep + sed）
+    local country=$(echo "$response" | grep -o '"country":"[^"]*"' | head -1 | cut -d'"' -f4)
+    local city=$(echo "$response" | grep -o '"city":"[^"]*"' | head -1 | cut -d'"' -f4)
+    local company=$(echo "$response" | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    # 安全标签检查
+    local security_tags=""
+
+    [[ "$response" =~ "is_threat":true ]] && security_tags="${security_tags}THREAT/"
+    [[ "$response" =~ "is_abuser":true ]] && security_tags="${security_tags}ABUSER/"
+    [[ "$response" =~ "is_attacker":true ]] && security_tags="${security_tags}ATTACKER/"
+    [[ "$response" =~ "is_tor":true ]] && security_tags="${security_tags}TOR/"
+    [[ "$response" =~ "is_proxy":true ]] && security_tags="${security_tags}PROXY/"
+    [[ "$response" =~ "is_vpn":true ]] && security_tags="${security_tags}VPN/"
+
+    # 组装返回值
+    local result=""
+
+    if [ -n "$country" ] || [ -n "$city" ] || [ -n "$company" ]; then
+        result="["
+        [ -n "$country" ] && result="${result}${country}"
+        if [ -n "$city" ]; then
+            [ -n "$country" ] && result="${result}, "
+            result="${result}${city}"
+        fi
+        if [ -n "$company" ]; then
+            result="${result} | ${company}"
+        fi
+        result="${result}]"
+    fi
+
+    if [ -n "$security_tags" ]; then
+        # 移除末尾的 /
+        security_tags="${security_tags%/}"
+        result="${result} [⚠️ ${security_tags}]"
+    fi
+
+    if [ -z "$result" ]; then
+        echo "[API Request Failed]"
+    else
+        echo "$result"
+    fi
+}
+
 # --- 0. 态势感知 ---
 scan_overview() {
     header "0. System Overview & Panorama"
@@ -202,6 +275,12 @@ scan_process() {
         if has_cmd netstat; then target_ip=$(netstat -antp 2>/dev/null | grep "$pid/" | awk '{print $5}' | cut -d: -f1 | grep -v "0.0.0.0" | grep -v "127.0.0.1" | sort -u | head -n 1)
         elif has_cmd ss; then target_ip=$(ss -antp 2>/dev/null | grep "pid=$pid," | awk '{print $5}' | cut -d: -f1 | grep -v "127.0.0.1" | head -n 1); fi
 
+        # 获取 IP 情报
+        ip_info=""
+        if [ -n "$target_ip" ]; then
+            ip_info=$(get_ip_info "$target_ip")
+        fi
+
         is_suspicious=0
         reason=""
         if [ -n "$cpu_usage" ] && [[ "$cpu_usage" =~ ^[0-9]+(\.[0-9]+)?$ ]] && awk "BEGIN {exit !($cpu_usage > $CPU_THRESHOLD)}"; then is_suspicious=1; reason="${reason}[High CPU] "; fi
@@ -215,10 +294,10 @@ scan_process() {
         echo -e "${RED}► PID: $pid${NC} | Name: ${CYAN}$proc_name${NC} | CPU: ${RED}$cpu_usage%${NC}"
         echo -e "  Reason: ${YELLOW}$reason${NC}"
         echo -e "  Path  : $exe_path"
-        echo -e "  Cmd   : ${cmd_line:0:100}..." 
-        
-        if [ ! -z "$target_ip" ]; then echo -e "  Net   : ${RED}Connected to: $target_ip${NC}"; fi
-        if [ ! -z "$detected_service" ]; then echo -e "${RED}[!] LINKED SERVICE: $detected_service${NC}"; fi
+        echo -e "  Cmd   : ${cmd_line:0:100}..."
+
+        if [ -n "$target_ip" ]; then echo -e "  Net   : ${RED}Connected to: $target_ip${NC} -> $ip_info"; fi
+        if [ -n "$detected_service" ]; then echo -e "${RED}[!] LINKED SERVICE: $detected_service${NC}"; fi
 
         ask "Is this MALICIOUS? Kill & Delete? (y/Enter to skip): " confirm_auto
         if [[ "$confirm_auto" =~ ^[yY] ]]; then
