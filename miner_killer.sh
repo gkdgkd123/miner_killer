@@ -155,29 +155,27 @@ get_ip_info() {
     fi
 
     # 构建 API 请求
-    local api_url="https://ipinfo.dkly.net/api/v1/ip/$ip"
-    local curl_opts="-s --connect-timeout 3"
-
-    if [ -n "$IPINFO_API_KEY" ]; then
-        curl_opts="$curl_opts -H \"Authorization: Bearer $IPINFO_API_KEY\""
-    fi
+    local api_url="https://ipinfo.dkly.net/api/?key=$IPINFO_API_KEY&ip=$ip"
 
     # 执行 API 请求
-    local response=$(eval "curl $curl_opts '$api_url'" 2>/dev/null)
+    local response=$(curl -s --connect-timeout 3 "$api_url" 2>/dev/null)
 
     if [ -z "$response" ]; then
         echo "[API Request Failed]"
         return
     fi
 
-    # 无 jq 环境下的 JSON 解析（使用 grep + sed）
-    local country=$(echo "$response" | grep -o '"country":"[^"]*"' | head -1 | cut -d'"' -f4)
-    local city=$(echo "$response" | grep -o '"city":"[^"]*"' | head -1 | cut -d'"' -f4)
-    local company=$(echo "$response" | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
-
-    # 安全标签检查
+    # 简单的 JSON 解析：直接提取所有 "name" 和 "organization" 字段
+    local company=""
     local security_tags=""
 
+    # 提取 company.name 或 connection.organization
+    company=$(echo "$response" | grep -o '"name":"[^"]*"' | head -1 | sed 's/"name":"\([^"]*\)"/\1/')
+    if [ -z "$company" ]; then
+        company=$(echo "$response" | grep -o '"organization":"[^"]*"' | head -1 | sed 's/"organization":"\([^"]*\)"/\1/')
+    fi
+
+    # 安全标签检查
     [[ "$response" =~ "is_threat":true ]] && security_tags="${security_tags}THREAT/"
     [[ "$response" =~ "is_abuser":true ]] && security_tags="${security_tags}ABUSER/"
     [[ "$response" =~ "is_attacker":true ]] && security_tags="${security_tags}ATTACKER/"
@@ -187,22 +185,11 @@ get_ip_info() {
 
     # 组装返回值
     local result=""
-
-    if [ -n "$country" ] || [ -n "$city" ] || [ -n "$company" ]; then
-        result="["
-        [ -n "$country" ] && result="${result}${country}"
-        if [ -n "$city" ]; then
-            [ -n "$country" ] && result="${result}, "
-            result="${result}${city}"
-        fi
-        if [ -n "$company" ]; then
-            result="${result} | ${company}"
-        fi
-        result="${result}]"
+    if [ -n "$company" ]; then
+        result="[$company]"
     fi
 
     if [ -n "$security_tags" ]; then
-        # 移除末尾的 /
         security_tags="${security_tags%/}"
         result="${result} [⚠️ ${security_tags}]"
     fi
