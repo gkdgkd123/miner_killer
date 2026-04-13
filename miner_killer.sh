@@ -165,17 +165,47 @@ get_ip_info() {
         return
     fi
 
-    # 简单的 JSON 解析：直接提取所有 "name" 和 "organization" 字段
-    local company=""
-    local security_tags=""
+    # 使用 Python 解析 JSON（如果可用）
+    if command -v python3 >/dev/null 2>&1; then
+        local result=$(python3 -c "
+import json, sys
+try:
+    data = json.loads('''$response''')
+    company = data.get('company', {}).get('name', '')
+    if not company:
+        company = data.get('connection', {}).get('organization', '')
 
-    # 提取 company.name 或 connection.organization
-    company=$(echo "$response" | grep -o '"name":"[^"]*"' | head -1 | sed 's/"name":"\([^"]*\)"/\1/')
+    security_tags = []
+    security = data.get('security', {})
+    if security.get('is_threat'): security_tags.append('THREAT')
+    if security.get('is_abuser'): security_tags.append('ABUSER')
+    if security.get('is_attacker'): security_tags.append('ATTACKER')
+    if security.get('is_tor'): security_tags.append('TOR')
+    if security.get('is_proxy'): security_tags.append('PROXY')
+    if security.get('is_vpn'): security_tags.append('VPN')
+
+    result = ''
+    if company:
+        result = f'[{company}]'
+    if security_tags:
+        result += f\" [⚠️ {'/'.join(security_tags)}]\"
+
+    print(result if result else '[API Request Failed]')
+except:
+    print('[API Request Failed]')
+" 2>/dev/null)
+        echo "$result"
+        return
+    fi
+
+    # Fallback: 使用 grep + sed（如果 Python 不可用）
+    local company=$(echo "$response" | grep -oP '"company":\s*\{[^}]*"name":"[^"]*"' | sed 's/.*"name":"\([^"]*\)".*/\1/')
     if [ -z "$company" ]; then
-        company=$(echo "$response" | grep -o '"organization":"[^"]*"' | head -1 | sed 's/"organization":"\([^"]*\)"/\1/')
+        company=$(echo "$response" | grep -oP '"connection":\s*\{[^}]*"organization":"[^"]*"' | sed 's/.*"organization":"\([^"]*\)".*/\1/')
     fi
 
     # 安全标签检查
+    local security_tags=""
     [[ "$response" =~ "is_threat":true ]] && security_tags="${security_tags}THREAT/"
     [[ "$response" =~ "is_abuser":true ]] && security_tags="${security_tags}ABUSER/"
     [[ "$response" =~ "is_attacker":true ]] && security_tags="${security_tags}ATTACKER/"
