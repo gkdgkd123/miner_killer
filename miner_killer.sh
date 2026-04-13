@@ -171,10 +171,19 @@ get_ip_info() {
 import json, sys
 try:
     data = json.loads('''$response''')
+
+    # 提取地理位置信息
+    location = data.get('location', {})
+    country = location.get('country', '')
+    region = location.get('region', '')
+    city = location.get('city', '')
+
+    # 提取公司信息
     company = data.get('company', {}).get('name', '')
     if not company:
         company = data.get('connection', {}).get('organization', '')
 
+    # 提取安全标签
     security_tags = []
     security = data.get('security', {})
     if security.get('is_threat'): security_tags.append('THREAT')
@@ -184,9 +193,33 @@ try:
     if security.get('is_proxy'): security_tags.append('PROXY')
     if security.get('is_vpn'): security_tags.append('VPN')
 
+    # 组装地理位置部分
+    location_str = ''
+    if country or region or city:
+        parts = []
+        if country:
+            parts.append(country)
+        if region:
+            parts.append(region)
+        if city:
+            parts.append(city)
+        location_str = ', '.join(parts)
+
+    # 组装公司部分
+    company_str = company if company else ''
+
+    # 组装结果
     result = ''
-    if company:
-        result = f'[{company}]'
+    if location_str or company_str:
+        result = '['
+        if location_str:
+            result += location_str
+        if company_str:
+            if location_str:
+                result += ' | '
+            result += company_str
+        result += ']'
+
     if security_tags:
         result += f\" [⚠️ {'/'.join(security_tags)}]\"
 
@@ -199,7 +232,11 @@ except:
     fi
 
     # Fallback: 使用 grep + sed（如果 Python 不可用）
+    local country=$(echo "$response" | grep -oP '"country":"[^"]*"' | sed 's/.*"\([^"]*\)".*/\1/' | head -1)
+    local region=$(echo "$response" | grep -oP '"region":"[^"]*"' | sed 's/.*"\([^"]*\)".*/\1/' | head -1)
+    local city=$(echo "$response" | grep -oP '"city":"[^"]*"' | sed 's/.*"\([^"]*\)".*/\1/' | head -1)
     local company=$(echo "$response" | grep -oP '"company":\s*\{[^}]*"name":"[^"]*"' | sed 's/.*"name":"\([^"]*\)".*/\1/')
+
     if [ -z "$company" ]; then
         company=$(echo "$response" | grep -oP '"connection":\s*\{[^}]*"organization":"[^"]*"' | sed 's/.*"organization":"\([^"]*\)".*/\1/')
     fi
@@ -213,10 +250,24 @@ except:
     [[ "$response" =~ "is_proxy":true ]] && security_tags="${security_tags}PROXY/"
     [[ "$response" =~ "is_vpn":true ]] && security_tags="${security_tags}VPN/"
 
-    # 组装返回值
+    # 组装地理位置部分
+    local location_str=""
+    if [ -n "$country" ] || [ -n "$region" ] || [ -n "$city" ]; then
+        location_str="$country"
+        [ -n "$region" ] && [ -n "$location_str" ] && location_str="${location_str}, $region" || location_str="$region"
+        [ -n "$city" ] && [ -n "$location_str" ] && location_str="${location_str}, $city" || location_str="$city"
+    fi
+
+    # 组装结果
     local result=""
-    if [ -n "$company" ]; then
-        result="[$company]"
+    if [ -n "$location_str" ] || [ -n "$company" ]; then
+        result="["
+        [ -n "$location_str" ] && result="${result}${location_str}"
+        if [ -n "$company" ]; then
+            [ -n "$location_str" ] && result="${result} | "
+            result="${result}${company}"
+        fi
+        result="${result}]"
     fi
 
     if [ -n "$security_tags" ]; then
