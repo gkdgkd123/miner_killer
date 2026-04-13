@@ -96,7 +96,10 @@ is_safe_path() {
 
 quarantine_and_remove() {
     local target="$1"
-    target=$(echo "$target" | sed 's/ (deleted)//' | awk '{print $1}')
+    # 仅去除 " (deleted)" 后缀（内核对已删除文件的标记），保留路径中的空格
+    target="${target% (deleted)}"
+    # 去除首尾空白
+    target=$(echo "$target" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     if [ -z "$target" ]; then return; fi
 
     if ! is_safe_path "$target"; then
@@ -186,7 +189,7 @@ scan_process() {
         proc_name=$(ps -p "$pid" -o comm= 2>/dev/null)
         if echo "$proc_name" | grep -iqE "$WHITELIST"; then continue; fi
 
-        cpu_usage=$(ps -p "$pid" -o %cpu= 2>/dev/null)
+        cpu_usage=$(ps -p "$pid" -o %cpu= 2>/dev/null | tr -d ' ')
         exe_path=""; if has_cmd readlink; then exe_path=$(readlink -f /proc/$pid/exe 2>/dev/null); fi
         [ -z "$exe_path" ] && exe_path=$(ls -l /proc/$pid/exe 2>/dev/null | awk '{print $NF}')
         cmd_line=$(cat /proc/$pid/cmdline 2>/dev/null | tr '\0' ' ')
@@ -198,7 +201,7 @@ scan_process() {
 
         is_suspicious=0
         reason=""
-        if [ -n "$cpu_usage" ] && awk "BEGIN {exit !($cpu_usage > 10.0)}" 2>/dev/null; then is_suspicious=1; reason="${reason}[High CPU] "; fi
+        if [ -n "$cpu_usage" ] && [[ "$cpu_usage" =~ ^[0-9]+(\.[0-9]+)?$ ]] && awk "BEGIN {exit !($cpu_usage > 10.0)}"; then is_suspicious=1; reason="${reason}[High CPU] "; fi
         if echo "$proc_name $cmd_line" | grep -iqE "$MALWARE_KEYWORDS"; then is_suspicious=1; reason="${reason}[Keyword] "; fi
         if [ -n "$target_ip" ]; then is_suspicious=1; reason="${reason}[Network] "; fi
         if [[ "$exe_path" == /tmp* ]] || [[ "$exe_path" == /root/.* ]] || [[ "$exe_path" == /dev/shm* ]]; then is_suspicious=1; reason="${reason}[Path] "; fi
