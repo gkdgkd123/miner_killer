@@ -167,10 +167,13 @@ scan_overview() {
 # --- 1. 进程查杀 ---
 scan_process() {
     header "1. Process Analysis"
-    log "Scanning processes (Logic: CPU>10% OR Network OR Keywords)..."
+    local CPU_THRESHOLD=8.0
+    log "Scanning processes (Logic: CPU>${CPU_THRESHOLD}% OR Network OR Keywords)..."
 
-    target_pids=$(ps -eo pid,%cpu,comm,cmd --sort=-%cpu 2>/dev/null | head -n 10 | awk 'NR>1 {print $1}')
-    keyword_pids=$(pgrep -f -i "$MALWARE_KEYWORDS" 2>/dev/null | head -n 5)
+    # CPU: 筛选所有超过阈值的进程，不限数量
+    cpu_pids=$(ps -eo pid,%cpu --sort=-%cpu 2>/dev/null | awk -v t="$CPU_THRESHOLD" 'NR>1 && $2+0 > t {print $1}')
+    # Keyword: 匹配恶意特征库，不限数量
+    keyword_pids=$(pgrep -f -i "$MALWARE_KEYWORDS" 2>/dev/null)
 
     net_pids=""
     if has_cmd netstat; then
@@ -179,7 +182,7 @@ scan_process() {
         net_pids=$(ss -antp 2>/dev/null | grep 'ESTABLISHED' | grep -v '127.0.0.1' | grep -v 'sshd' | awk '{print $6}' | cut -d, -f2 | grep -v '^-$')
     fi
 
-    all_pids=$(printf '%s\n' $target_pids $keyword_pids $net_pids | sort -u | grep -v '^$')
+    all_pids=$(printf '%s\n' $cpu_pids $keyword_pids $net_pids | sort -u | grep -v '^$')
 
     for pid in $all_pids; do
         if ! [[ "$pid" =~ ^[0-9]+$ ]] || [ ! -d "/proc/$pid" ]; then continue; fi
@@ -201,7 +204,7 @@ scan_process() {
 
         is_suspicious=0
         reason=""
-        if [ -n "$cpu_usage" ] && [[ "$cpu_usage" =~ ^[0-9]+(\.[0-9]+)?$ ]] && awk "BEGIN {exit !($cpu_usage > 10.0)}"; then is_suspicious=1; reason="${reason}[High CPU] "; fi
+        if [ -n "$cpu_usage" ] && [[ "$cpu_usage" =~ ^[0-9]+(\.[0-9]+)?$ ]] && awk "BEGIN {exit !($cpu_usage > $CPU_THRESHOLD)}"; then is_suspicious=1; reason="${reason}[High CPU] "; fi
         if echo "$proc_name $cmd_line" | grep -iqE "$MALWARE_KEYWORDS"; then is_suspicious=1; reason="${reason}[Keyword] "; fi
         if [ -n "$target_ip" ]; then is_suspicious=1; reason="${reason}[Network] "; fi
         if [[ "$exe_path" == /tmp* ]] || [[ "$exe_path" == /root/.* ]] || [[ "$exe_path" == /dev/shm* ]]; then is_suspicious=1; reason="${reason}[Path] "; fi
