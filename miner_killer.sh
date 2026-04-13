@@ -720,12 +720,191 @@ scan_ssh() {
 check_shell_users() {
     echo -e "\n[+] 正在检测所有 Shell 为 bash 或 sh 的账户 (可能包含后门或服务账户)..."
     echo "-------------------------------------------------------------------"
-    
+
     # 使用 awk 匹配第7列（Shell路径），只要以 bash 或 sh 结尾即打印整行
     # 这将覆盖 /bin/bash, /bin/sh, /usr/bin/bash, /bin/dash 等情况
     awk -F: '$7 ~ /(bash|sh)$/ {print $0}' /etc/passwd
-    
+
     echo "-------------------------------------------------------------------"
+}
+
+# --- 8. 网络连接全景扫描 ---
+scan_network_connections() {
+    header "8. Network Connections Panorama"
+
+    log "${CYAN}[*] Scanning all ESTABLISHED connections for IP intelligence...${NC}"
+
+    # 解析 /proc/net/tcp 和 /proc/net/tcp6
+    local tcp_file="/proc/net/tcp"
+    local tcp6_file="/proc/net/tcp6"
+    local connections=()
+
+    # 处理 IPv4 连接
+    if [ -f "$tcp_file" ]; then
+        while IFS= read -r line; do
+            # 跳过头行
+            if [[ "$line" =~ ^sl ]]; then continue; fi
+
+            # 解析 remote_address（十六进制）
+            local remote_addr=$(echo "$line" | awk '{print $3}' | cut -d: -f1)
+            local remote_port=$(echo "$line" | awk '{print $3}' | cut -d: -f2)
+            local state=$(echo "$line" | awk '{print $4}')
+
+            # 仅关注 ESTABLISHED (01)
+            if [ "$state" != "01" ]; then continue; fi
+
+            # 十六进制转 IP（小端序）
+            local ip=$(printf "%d.%d.%d.%d" \
+                0x${remote_addr:6:2} \
+                0x${remote_addr:4:2} \
+                0x${remote_addr:2:2} \
+                0x${remote_addr:0:2} 2>/dev/null)
+
+            if [ -n "$ip" ] && ! [[ "$ip" =~ ^0\. ]]; then
+                connections+=("$ip")
+            fi
+        done < "$tcp_file"
+    fi
+
+    # 处理 IPv6 连接（简化处理）
+    if [ -f "$tcp6_file" ]; then
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^sl ]]; then continue; fi
+            local state=$(echo "$line" | awk '{print $4}')
+            if [ "$state" != "01" ]; then continue; fi
+            # IPv6 处理较复杂，这里仅记录存在
+            connections+=("[IPv6]")
+        done < "$tcp6_file"
+    fi
+
+    if [ ${#connections[@]} -eq 0 ]; then
+        log "${GREEN}[OK] No external ESTABLISHED connections found.${NC}"
+        return
+    fi
+
+    # 去重并查询情报
+    local unique_ips=$(printf '%s\n' "${connections[@]}" | sort -u)
+    local cnt=1
+
+    echo -e "${BLUE}--- Network Connections with IP Intelligence ---${NC}"
+    while IFS= read -r ip; do
+        if [ -z "$ip" ]; then continue; fi
+
+        if [[ "$ip" == "[IPv6]" ]]; then
+            echo "[$cnt] [IPv6] (IPv6 connections detected)"
+            ((cnt++))
+            continue
+        fi
+
+        local ip_info=$(get_ip_info "$ip")
+        echo "[$cnt] $ip -> $ip_info"
+        ((cnt++))
+    done <<< "$unique_ips"
+
+    echo -e "${BLUE}-------------------------------------------${NC}"
+}
+
+# --- 9. DNS 服务器审计 ---
+scan_dns_servers() {
+    header "9. DNS Servers Audit"
+
+    log "${CYAN}[*] Checking DNS servers in /etc/resolv.conf...${NC}"
+
+    if [ ! -f /etc/resolv.conf ]; then
+        log "${CYAN}[-] /etc/resolv.conf not found.${NC}"
+        return
+    fi
+
+    local dns_servers=$(grep "^nameserver" /etc/resolv.conf | awk '{print $2}')
+
+    if [ -z "$dns_servers" ]; then
+        log "${GREEN}[OK] No DNS servers configured.${NC}"
+        return
+    fi
+
+    echo -e "${BLUE}--- DNS Servers with IP Intelligence ---${NC}"
+    local cnt=1
+    while IFS= read -r dns_ip; do
+        if [ -z "$dns_ip" ]; then continue; fi
+
+        local ip_info=$(get_ip_info "$dns_ip")
+        echo "[$cnt] $dns_ip -> $ip_info"
+        ((cnt++))
+    done <<< "$dns_servers"
+    echo -e "${BLUE}--------------------------------------${NC}"
+}
+
+# --- 10. Service 文件网络连接审计 ---
+scan_service_network() {
+    header "10. Service Files Network Audit"
+
+    log "${CYAN}[*] Scanning service files for hardcoded IP/domain connections...${NC}"
+
+    local SEARCH_PATHS="/etc/systemd/system /usr/lib/systemd/system"
+    local service_files=()
+
+    while IFS= read -r svc; do
+        if [ -n "$svc" ]; then service_files+=("$svc"); fi
+    done < <(find $SEARCH_PATHS -name "*.service" -type f 2>/dev/null)
+
+    if [ ${#service_files[@]} -eq 0 ]; then
+        log "No service files found."
+        return
+    fi
+
+    local suspicious_count=0
+    echo -e "${BLUE}--- Service Files with Network Connections ---${NC}"
+
+    for svc in "${service_files[@]}"; do
+        # 提取 ExecStart 中的 IP 地址
+        local ips=$(grep -oE "ExecStart=.*" "$svc" | grep -oE "[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}" 2>/dev/null)
+
+        if [ -n "$ips" ]; then
+            echo -e "${RED}[!!!] $(basename "$svc") contains hardcoded IPs:${NC}"
+            while IFS= read -r ip; do
+                if [ -z "$ip" ]; then continue; fi
+                local ip_info=$(get_ip_info "$ip")
+                echo "      $ip -> $ip_info"
+                ((suspicious_count++))
+            done <<< "$ips"
+        fi
+    done
+
+    if [ $suspicious_count -eq 0 ]; then
+        log "${GREEN}[OK] No suspicious IPs found in service files.${NC}"
+    fi
+    echo -e "${BLUE}-------------------------------------------${NC}"
+}
+
+# --- 11. /etc/hosts 文件 IP 情报查询 ---
+scan_hosts_intelligence() {
+    header "11. /etc/hosts IP Intelligence"
+
+    log "${CYAN}[*] Checking /etc/hosts for suspicious entries...${NC}"
+
+    if [ ! -f /etc/hosts ]; then
+        log "${CYAN}[-] /etc/hosts not found.${NC}"
+        return
+    fi
+
+    # 提取所有非注释、非本地的 IP
+    local hosts_ips=$(grep -v "^#" /etc/hosts | grep -v "^$" | awk '{print $1}' | grep -v "^127\." | grep -v "^::1" | sort -u)
+
+    if [ -z "$hosts_ips" ]; then
+        log "${GREEN}[OK] No external IPs in /etc/hosts.${NC}"
+        return
+    fi
+
+    echo -e "${BLUE}--- /etc/hosts External IPs with Intelligence ---${NC}"
+    local cnt=1
+    while IFS= read -r ip; do
+        if [ -z "$ip" ]; then continue; fi
+
+        local ip_info=$(get_ip_info "$ip")
+        echo "[$cnt] $ip -> $ip_info"
+        ((cnt++))
+    done <<< "$hosts_ips"
+    echo -e "${BLUE}----------------------------------------------${NC}"
 }
 
 # --- 执行主流程 ---
@@ -738,5 +917,9 @@ scan_pm2
 scan_persistence
 scan_rootkit
 scan_ssh
+scan_network_connections
+scan_dns_servers
+scan_service_network
+scan_hosts_intelligence
 check_shell_users
 cleanup
