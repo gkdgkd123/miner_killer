@@ -1,3 +1,5 @@
+<div align="center">
+
 # Miner Killer
 
 > Linux 服务器应急响应工具 - 挖矿木马检测与清除
@@ -7,6 +9,8 @@
 [![Platform](https://img.shields.io/badge/Platform-Linux-orange.svg)](https://www.kernel.org/)
 
 [English](README_EN.md) | 中文
+
+</div>
 
 ---
 

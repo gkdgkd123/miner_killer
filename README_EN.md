@@ -1,3 +1,5 @@
+<div align="center">
+
 # Miner Killer
 
 > Linux Server Incident Response Tool - Cryptominer Detection & Removal
@@ -7,6 +9,8 @@
 [![Platform](https://img.shields.io/badge/Platform-Linux-orange.svg)](https://www.kernel.org/)
 
 English | [中文](README.md)
+
+</div>
 
 ---
 
