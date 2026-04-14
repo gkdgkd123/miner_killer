@@ -88,12 +88,29 @@ check_root() {
 
 is_safe_path() {
     local path="$1"
-    local safe_dirs="/tmp /var/tmp /dev/shm /root /home /etc/systemd /usr/lib/systemd /etc/ld.so.preload"
+    local safe_dirs="/tmp /var/tmp /dev/shm /root /home"
+
+    # 检查是否在基础安全目录中
     for dir in $safe_dirs; do
         if [[ "$path" == "$dir"* ]]; then
             return 0
         fi
     done
+
+    # 特殊处理：systemd 路径只允许删除 .service 文件
+    if [[ "$path" == /etc/systemd/* ]] || [[ "$path" == /usr/lib/systemd/* ]]; then
+        if [[ "$path" == *.service ]]; then
+            return 0
+        else
+            return 1
+        fi
+    fi
+
+    # 特殊处理：/etc/ld.so.preload 允许删除
+    if [[ "$path" == "/etc/ld.so.preload" ]]; then
+        return 0
+    fi
+
     return 1
 }
 
@@ -382,19 +399,36 @@ scan_process() {
                 fi
             fi
             log "${RED}KILLING PID $pid...${NC}"
+
+            # 先冻结进程防止守护进程复活
+            if kill -STOP "$pid" 2>/dev/null; then
+                log "${CYAN}[*] Process frozen (SIGSTOP)${NC}"
+            fi
+
+            # 停止关联的 service
             if [ -n "$detected_service" ]; then
                 systemctl stop "$(basename "$detected_service")" 2>/dev/null || true
                 systemctl disable "$(basename "$detected_service")" 2>/dev/null || true
             fi
-            if kill -9 "$pid" 2>/dev/null; then
-                sleep 1
-                if [ -n "$exe_path" ]; then quarantine_and_remove "$exe_path"; fi
-                if [ -n "$detected_service" ] && [ -f "$detected_service" ]; then
-                    ask "Also delete service file $detected_service ? (y/n): " c_svc
-                    [[ "$c_svc" =~ ^[yY] ]] && quarantine_and_remove "$detected_service"
-                fi
+
+            # 删除可执行文件（进程已冻结，无法复活）
+            if [ -n "$exe_path" ]; then
+                quarantine_and_remove "$exe_path"
+            fi
+
+            # 彻底清理：击杀进程组
+            if kill -9 "-$pid" 2>/dev/null; then
+                log "${GREEN}[✔] Process group killed${NC}"
+            elif kill -9 "$pid" 2>/dev/null; then
+                log "${GREEN}[✔] Process killed${NC}"
             else
                 log "${RED}[X] Failed to kill PID $pid${NC}"
+            fi
+
+            # 删除 service 文件
+            if [ -n "$detected_service" ] && [ -f "$detected_service" ]; then
+                ask "Also delete service file $detected_service ? (y/n): " c_svc
+                [[ "$c_svc" =~ ^[yY] ]] && quarantine_and_remove "$detected_service"
             fi
         fi
     done
@@ -587,11 +621,11 @@ scan_persistence() {
                 echo -e "${BLUE}================ FILE CONTENT: $target_cron =================${NC}"
                 cat "$target_cron"
                 echo -e "${BLUE}============================================================${NC}"
-                ask "${RED}Clear this file (Empty it)? (y/n): ${NC}" confirm
+                ask "${RED}Edit this file manually to remove malicious lines? (y/n): ${NC}" confirm
                 if [[ "$confirm" =~ ^[yY] ]]; then
                     if cp "$target_cron" "${target_cron}.bak"; then
-                        > "$target_cron"
-                        log "${GREEN}[✔] File cleared: $target_cron${NC}"
+                        ${EDITOR:-vi} "$target_cron" < /dev/tty || log "${RED}[X] Failed to edit $target_cron${NC}"
+                        log "${GREEN}[✔] File edited: $target_cron (backup: ${target_cron}.bak)${NC}"
                     else
                         log "${RED}[X] Failed to backup $target_cron${NC}"
                     fi
